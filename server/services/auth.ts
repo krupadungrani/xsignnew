@@ -1,6 +1,6 @@
 import bcrypt from "bcrypt";
 import { storage } from "../storage";
-import { type InsertUser } from "@shared/schema";
+import { type InsertUser } from "../shared/schema";
 
 export class AuthService {
   async register(userData: InsertUser & { password: string }) {
