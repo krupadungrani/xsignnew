@@ -19,7 +19,9 @@ export class EmailService {
   }
 
   async sendVerificationEmail(email: string, fullName: string, token: string) {
-    const verificationUrl = `${process.env.APP_URL || 'http://localhost:5000'}/verify-email?token=${token}`;
+    // APP_URL should be set to your deployed Vercel URL, e.g. https://your-app.vercel.app
+    const baseUrl = process.env.APP_URL || "http://localhost:5000";
+    const verificationUrl = `${baseUrl.replace(/\/$/, "")}/api/verify-email?token=${token}`;
     
     if (this.transporter) {
       // Production: Send actual email

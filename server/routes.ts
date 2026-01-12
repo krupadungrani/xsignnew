@@ -1458,8 +1458,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Email verification endpoint
-  app.get('/verify-email', async (req, res) => {
+  // Email verification endpoint (now under /api for Vercel compatibility)
+  app.get("/api/verify-email", async (req, res) => {
     try {
       const { token } = req.query;
       
