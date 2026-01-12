@@ -28,7 +28,7 @@ async function safeDeleteFile(filePath: string, context: string = "file"): Promi
       }
       throw accessError; // Re-throw other access errors
     }
-    
+
     // File exists, proceed with deletion
     await fs.unlink(filePath);
     console.log(`Successfully deleted ${context}: ${filePath}`);
@@ -45,9 +45,11 @@ async function safeDeleteFile(filePath: string, context: string = "file"): Promi
   }
 }
 
+import os from "os";
+
 // Configure multer for file uploads with optimized settings
 const upload = multer({
-  dest: "uploads/",
+  dest: os.tmpdir(),
   limits: {
     fileSize: 100 * 1024 * 1024, // 100MB limit (increased from 50MB)
     fieldSize: 10 * 1024 * 1024, // 10MB for field data
@@ -63,7 +65,7 @@ const upload = multer({
   // Use memory storage for better performance with large files
   storage: multer.diskStorage({
     destination: (req, file, cb) => {
-      cb(null, 'uploads/');
+      cb(null, os.tmpdir());
     },
     filename: (req, file, cb) => {
       // Generate unique filename to avoid conflicts
@@ -77,8 +79,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Test endpoint to verify server is working
   app.get("/api/health", async (req, res) => {
     try {
-      res.json({ 
-        status: "ok", 
+      res.json({
+        status: "ok",
         timestamp: new Date().toISOString(),
         uptime: process.uptime(),
         memory: process.memoryUsage()
@@ -92,11 +94,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post("/api/test/pdf", upload.single("pdf"), async (req, res) => {
     try {
       console.log("=== PDF TEST ENDPOINT ===");
-      
+
       if (!req.file) {
         return res.status(400).json({ error: "No PDF file uploaded" });
       }
-      
+
       const file = req.file;
       console.log("Test file:", {
         filename: file.filename,
@@ -105,16 +107,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
         path: file.path,
         mimetype: file.mimetype
       });
-      
+
       // Test PDF processing
       const pageCount = await pdfService.getPageCount(file.path);
       const pageSizes = await pdfService.getPageSizes(file.path);
-      
+
       // Clean up test file
       await safeDeleteFile(file.path, "test file");
-      
-      res.json({ 
-        success: true, 
+
+      res.json({
+        success: true,
         message: "PDF processing test successful",
         pageCount,
         pageSizes,
@@ -124,15 +126,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
           mimetype: file.mimetype
         }
       });
-      
+
     } catch (error: any) {
       console.error("PDF test error:", error);
-      
+
       // Try to clean up test file
       if (req.file) {
         await safeDeleteFile(req.file.path, "test file");
       }
-      
+
       res.status(400).json({ error: error.message });
     }
   });
@@ -142,7 +144,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       // Get the first user from the database for testing purposes
       const users = await storage.getAllUsers();
-      
+
       // Only return minimal user information for security
       const safeUsers = users.slice(0, 5).map(user => ({
         id: user.id,
@@ -150,7 +152,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         fullName: user.fullName,
         companyName: user.companyName
       }));
-      
+
       res.json({ success: true, users: safeUsers });
     } catch (error: any) {
       console.error("Error fetching users:", error);
@@ -207,13 +209,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Generate new verification token
       const verificationToken = crypto.randomBytes(32).toString('hex');
-      
+
       // Update user with new token
       await storage.updateUser(user.id, { verificationToken });
-      
+
       // Send new verification email
       await emailService.sendVerificationEmail(user.email, user.fullName, verificationToken);
-      
+
       res.json({ success: true, message: "Verification email sent" });
     } catch (error: any) {
       console.error("Resend verification error:", error);
@@ -230,8 +232,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
     console.log("Request body:", req.body);
     console.log("Request body type:", typeof req.body);
     console.log("Request body keys:", Object.keys(req.body || {}));
-    res.json({ 
-      message: "Debug endpoint hit", 
+    res.json({
+      message: "Debug endpoint hit",
       body: req.body,
       bodyKeys: Object.keys(req.body || {}),
       timestamp: new Date().toISOString()
@@ -244,16 +246,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
       console.log("Raw request body:", req.body);
       console.log("Request body type:", typeof req.body);
       console.log("Request body keys:", Object.keys(req.body));
-      
+
       const { userId, email, signatureImage, ...signatureData } = req.body;
-      
+
       console.log("Extracted data:");
       console.log("- userId:", userId, "type:", typeof userId);
       console.log("- email:", email, "type:", typeof email);
       console.log("- signatureImage:", signatureImage, "type:", typeof signatureImage);
       console.log("- signatureData:", signatureData);
       console.log("- signatureData keys:", Object.keys(signatureData));
-      
+
       // Validate that userId is provided
       if (!userId) {
         console.error("Missing userId in signature creation");
@@ -292,12 +294,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Validate the request data
       const validatedRequestData = requestSchema.parse(completeSignatureData);
       console.log("Request schema validation passed:", validatedRequestData);
-      
+
       // Transform the data for the service layer (remove userId since it's passed separately)
       const { userId: _, ...serviceData } = validatedRequestData;
       console.log("Service data (without userId):", serviceData);
       console.log("Service data keys:", Object.keys(serviceData));
-      
+
       // Create a service schema that matches what the service layer expects (without userId)
       const serviceSchema = z.object({
         name: z.string(),
@@ -308,21 +310,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
         signatureImage: z.string().nullable().optional(),
         password: z.string().optional(), // Add password field
       });
-      
+
       // Validate that serviceData matches service schema (without userId)
       console.log("Validating against service schema...");
       const validatedServiceData = serviceSchema.parse(serviceData);
       console.log("Service schema validation passed:", validatedServiceData);
-      
+
       // Cast the validated data to InsertSignature type for the service layer
       const serviceSignatureData = validatedServiceData as any;
-      
+
       const signature = await signatureService.createDigitalSignature(
         userId,
         serviceSignatureData,
         email
       );
-      
+
       console.log("Signature created successfully:", signature.id);
       res.json({ success: true, signature });
     } catch (error: any) {
@@ -360,25 +362,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
       console.log("=== PDF UPLOAD REQUEST ===");
       console.log("Request body:", req.body);
       console.log("Files:", req.files);
-      
+
       const { userId } = req.body;
       const files = req.files as Express.Multer.File[];
-      
+
       console.log("Extracted userId:", userId);
       console.log("Extracted files:", files);
-      
+
       // Log file sizes for debugging
       if (files && files.length > 0) {
         files.forEach((file, index) => {
           console.log(`File ${index + 1}: ${file.originalname}, Size: ${(file.size / 1024 / 1024).toFixed(2)}MB`);
         });
       }
-      
+
       if (!userId) {
         console.error("Missing userId in PDF upload");
         return res.status(400).json({ error: "userId is required" });
       }
-      
+
       if (!files || files.length === 0) {
         console.error("No files uploaded");
         return res.status(400).json({ error: "No files uploaded" });
@@ -386,7 +388,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       console.log(`Processing ${files.length} PDF file(s)...`);
       const documents = [];
-      
+
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
         console.log(`Processing file ${i + 1}/${files.length}:`, {
@@ -396,12 +398,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
           path: file.path,
           mimetype: file.mimetype
         });
-        
+
         try {
           // Check if file exists and is readable
           await fs.access(file.path);
           console.log(`File ${file.filename} is accessible`);
-          
+
           // Create document in database with initial status
           console.log(`Creating document record for ${file.filename}...`);
           const document = await storage.createDocument({
@@ -414,44 +416,44 @@ export async function registerRoutes(app: Express): Promise<Server> {
             pageSizes: "[]", // Will be updated after processing
             status: "pending", // Explicitly set initial status
           });
-          
+
           console.log(`Document created successfully:`, document.id);
-          
+
           try {
             // Process the PDF document
             console.log(`Processing PDF document ${file.filename}...`);
             const { pageCount, pageSizes } = await pdfService.processDocument(file.path);
-            
+
             // Update document with processed information
             console.log(`Updating document status to processed for ID: ${document.id}`);
             await storage.updateDocumentStatus(document.id, "processed", pageCount, JSON.stringify(pageSizes));
             console.log(`Document status updated to processed: ${document.id}`);
-            
+
             // Update page count and sizes (you might need to add these fields to your update method)
             // For now, we'll just update the status
-            
+
             documents.push(document);
           } catch (processingError: any) {
             console.error(`Error processing PDF ${file.filename}:`, processingError);
-            
+
             // Update status to error
             console.log(`Updating document status to error for ID: ${document.id}`);
             await storage.updateDocumentStatus(document.id, "error");
             console.log(`Document status updated to error: ${document.id}`);
-            
+
             // Remove the document from the array since it failed
             // documents.pop(); // Remove the last added document
-            
+
             throw processingError;
           }
-          
+
         } catch (fileError: any) {
           console.error(`Error processing file ${file.filename}:`, fileError);
           console.error(`File error stack:`, fileError.stack);
-          
+
           // Try to clean up the uploaded file
           await safeDeleteFile(file.path, `uploaded file ${file.filename}`);
-          
+
           // If we created a document record, update its status to error
           if (documents.length > 0) {
             const lastDocument = documents[documents.length - 1];
@@ -462,7 +464,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
               console.error(`Failed to update document status:`, statusError);
             }
           }
-          
+
           throw new Error(`Failed to process PDF file ${file.originalname}: ${fileError.message}`);
         }
       }
@@ -471,7 +473,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const totalTime = (endTime - startTime) / 1000;
       console.log(`Successfully processed ${documents.length} PDF file(s) in ${totalTime.toFixed(2)} seconds`);
       res.json({ success: true, documents });
-      
+
     } catch (error: any) {
       const endTime = Date.now();
       const totalTime = (endTime - startTime) / 1000;
@@ -485,11 +487,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post("/api/documents/fix-status", async (req, res) => {
     try {
       console.log("=== FIXING DOCUMENT STATUS ===");
-      
+
       // Get all documents
       const allDocuments = await db.select().from(pdfDocuments);
       console.log("All documents:", allDocuments.map(d => ({ id: d.id, status: d.status, fileName: d.fileName })));
-      
+
       // Update documents without status
       let updatedCount = 0;
       for (const doc of allDocuments) {
@@ -499,10 +501,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
           updatedCount++;
         }
       }
-      
+
       console.log(`Updated ${updatedCount} documents`);
       res.json({ success: true, updatedCount });
-      
+
     } catch (error: any) {
       console.error("Error fixing document status:", error);
       res.status(500).json({ error: error.message });
@@ -513,15 +515,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post("/api/documents/cleanup", async (req, res) => {
     try {
       console.log("=== CLEANING UP INVALID DOCUMENTS ===");
-      
+
       // Get all documents
       const allDocuments = await db.select().from(pdfDocuments);
       console.log(`Found ${allDocuments.length} total documents`);
-      
+
       let cleanedUpCount = 0;
       let validCount = 0;
       let errorCount = 0;
-      
+
       for (const doc of allDocuments) {
         try {
           // Check if file exists
@@ -531,7 +533,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           if (accessError.code === 'ENOENT') {
             // File doesn't exist, clean up the database record
             console.log(`Cleaning up invalid document: ${doc.id} (file missing: ${doc.filePath})`);
-            
+
             try {
               // Delete any applied signatures first
               const appliedSignatures = await storage.getDocumentSignatures(doc.id);
@@ -543,7 +545,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                   console.error(`Failed to delete applied signature ${sig.id}:`, sigError);
                 }
               }
-              
+
               // Delete the document record
               await storage.deleteDocument(doc.id);
               cleanedUpCount++;
@@ -559,17 +561,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
           }
         }
       }
-      
+
       console.log(`Cleanup complete: ${cleanedUpCount} invalid documents removed, ${validCount} valid documents, ${errorCount} errors`);
-      
-      res.json({ 
-        success: true, 
+
+      res.json({
+        success: true,
         cleanedUpCount,
         validCount,
         errorCount,
         totalProcessed: allDocuments.length
       });
-      
+
     } catch (error: any) {
       console.error("Error during cleanup:", error);
       res.status(500).json({ error: error.message });
@@ -581,29 +583,29 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const { userId } = req.params;
       const documents = await storage.getUserDocuments(userId);
-      
+
       // Clean up invalid documents and update status for valid ones
       const validDocuments = [];
       let cleanedUpCount = 0;
-      
+
       for (const doc of documents) {
         try {
           // Check if file exists
           await fs.access(doc.filePath);
-          
+
           // File exists, update status if needed
           if (!doc.status) {
             console.log(`Updating document ${doc.id} with missing status field`);
             await storage.updateDocumentStatus(doc.id, "processed");
             doc.status = "processed";
           }
-          
+
           validDocuments.push(doc);
         } catch (accessError: any) {
           if (accessError.code === 'ENOENT') {
             // File doesn't exist, clean up the database record
             console.log(`Cleaning up invalid document: ${doc.id} (file missing: ${doc.filePath})`);
-            
+
             try {
               // Delete any applied signatures first
               const appliedSignatures = await storage.getDocumentSignatures(doc.id);
@@ -615,7 +617,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                   console.error(`Failed to delete applied signature ${sig.id}:`, sigError);
                 }
               }
-              
+
               // Delete the document record
               await storage.deleteDocument(doc.id);
               cleanedUpCount++;
@@ -631,11 +633,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
           }
         }
       }
-      
+
       console.log(`Cleaned up ${cleanedUpCount} invalid documents, returning ${validDocuments.length} valid documents`);
-      
-      res.json({ 
-        success: true, 
+
+      res.json({
+        success: true,
         documents: validDocuments,
         cleanedUpCount,
         totalProcessed: documents.length
@@ -650,16 +652,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const { documentId } = req.params;
       console.log(`API: Attempting to delete document ${documentId}`);
-      
+
       const document = await storage.getDocument(documentId);
-      
+
       if (!document) {
         console.log(`API: Document ${documentId} not found`);
         return res.status(404).json({ error: "Document not found" });
       }
 
       console.log(`API: Found document ${documentId}, checking for applied signatures`);
-      
+
       // Check if document has applied signatures
       const appliedSignatures = await storage.getDocumentSignatures(documentId);
       console.log(`API: Document ${documentId} has ${appliedSignatures.length} applied signatures`);
@@ -667,23 +669,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Delete file from filesystem (this won't fail the operation)
       const fileDeleted = await safeDeleteFile(document.filePath, "document file");
       console.log(`API: File deletion result: ${fileDeleted}`);
-      
+
       // Delete from database (this will also delete applied signatures)
       await storage.deleteDocument(documentId);
-      
+
       console.log(`API: Successfully deleted document ${documentId} and ${appliedSignatures.length} signatures`);
-      
-      res.json({ 
-        success: true, 
+
+      res.json({
+        success: true,
         message: "Document deleted successfully",
         fileDeleted: fileDeleted,
         signaturesDeleted: appliedSignatures.length
       });
     } catch (error: any) {
       console.error("Document deletion error:", error);
-      res.status(500).json({ 
-        error: "Failed to delete document", 
-        details: error.message 
+      res.status(500).json({
+        error: "Failed to delete document",
+        details: error.message
       });
     }
   });
@@ -692,14 +694,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get("/api/debug/signatures/:documentId", async (req, res) => {
     try {
       const { documentId } = req.params;
-      
+
       const document = await storage.getDocument(documentId);
       if (!document) {
         return res.status(404).json({ error: "Document not found" });
       }
 
       const appliedSignatures = await storage.getDocumentSignatures(documentId);
-      
+
       res.json({
         success: true,
         document: {
@@ -728,7 +730,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const { documentId } = req.params;
       const { signatureId, pageNumbers, position, password } = req.body;
-      
+
       console.log("Applying signature:", { documentId, signatureId, pageNumbers, position });
       console.log("Position validation details:", {
         positionExists: !!position,
@@ -741,51 +743,51 @@ export async function registerRoutes(app: Express): Promise<Server> {
         positionKeys: position && typeof position === 'object' ? Object.keys(position) : 'undefined',
         fullPosition: JSON.stringify(position)
       });
-      
+
       // Validate required fields
       if (!signatureId || !pageNumbers || !position) {
         console.error("Missing required fields:", { signatureId, pageNumbers, position });
-        return res.status(400).json({ 
-          error: "Missing required fields: signatureId, pageNumbers, and position are required" 
+        return res.status(400).json({
+          error: "Missing required fields: signatureId, pageNumbers, and position are required"
         });
       }
 
       // Validate pageNumbers is an array
       if (!Array.isArray(pageNumbers) || pageNumbers.length === 0) {
         console.error("Invalid pageNumbers:", pageNumbers);
-        return res.status(400).json({ 
-          error: "pageNumbers must be a non-empty array" 
+        return res.status(400).json({
+          error: "pageNumbers must be a non-empty array"
         });
       }
 
       // Validate position object
       if (!position || typeof position !== 'object') {
         console.error("Position is not an object:", position);
-        return res.status(400).json({ 
-          error: "position must be a valid object" 
+        return res.status(400).json({
+          error: "position must be a valid object"
         });
       }
-      
+
       // Validate gridPosition is present and is a string
       if (!position.gridPosition || typeof position.gridPosition !== 'string') {
         console.error("Invalid position object - missing or invalid gridPosition:", position);
-        return res.status(400).json({ 
-          error: "position must include a valid gridPosition string" 
+        return res.status(400).json({
+          error: "position must include a valid gridPosition string"
         });
       }
 
       // Validate custom coordinates if present
       if (position.x !== undefined && (typeof position.x !== 'number' || position.x < 0)) {
         console.error("Invalid x coordinate:", position.x);
-        return res.status(400).json({ 
-          error: "position.x must be a valid non-negative number" 
+        return res.status(400).json({
+          error: "position.x must be a valid non-negative number"
         });
       }
 
       if (position.y !== undefined && (typeof position.y !== 'number' || position.y < 0)) {
         console.error("Invalid y coordinate:", position.y);
-        return res.status(400).json({ 
-          error: "position.y must be a valid non-negative number" 
+        return res.status(400).json({
+          error: "position.y must be a valid non-negative number"
         });
       }
 
@@ -793,8 +795,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const document = await storage.getDocument(documentId);
       if (!document) {
         console.error("Document not found:", documentId);
-        return res.status(404).json({ 
-          error: "Document not found", 
+        return res.status(404).json({
+          error: "Document not found",
           documentId,
           message: "The requested document could not be found in the database"
         });
@@ -811,17 +813,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (signature.password && signature.password.trim() !== "") {
         if (!password || password.trim() === "") {
           console.error("Password required for signature:", signatureId);
-          return res.status(401).json({ 
-            error: "Password required", 
-            message: "This signature is password protected. Please provide the correct password." 
+          return res.status(401).json({
+            error: "Password required",
+            message: "This signature is password protected. Please provide the correct password."
           });
         }
-        
+
         if (password !== signature.password) {
           console.error("Invalid password for signature:", signatureId);
-          return res.status(401).json({ 
-            error: "Invalid password", 
-            message: "The provided password is incorrect." 
+          return res.status(401).json({
+            error: "Invalid password",
+            message: "The provided password is incorrect."
           });
         }
       }
@@ -830,11 +832,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const invalidPages = pageNumbers.filter(page => page < 1 || page > document.pageCount);
       if (invalidPages.length > 0) {
         console.error("Invalid page numbers:", invalidPages, "Document has", document.pageCount, "pages");
-        return res.status(400).json({ 
-          error: `Invalid page numbers: ${invalidPages.join(', ')}. Document has ${document.pageCount} pages.` 
+        return res.status(400).json({
+          error: `Invalid page numbers: ${invalidPages.join(', ')}. Document has ${document.pageCount} pages.`
         });
       }
-      
+
       console.log("Applying signature with data:", {
         documentId,
         signatureId,
@@ -842,9 +844,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         position,
         hasPassword: !!signature.password
       });
-      
+
       const appliedSignatures = [];
-      
+
       for (const pageNumber of pageNumbers) {
         console.log(`Applying signature to page ${pageNumber}`);
         try {
@@ -863,11 +865,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       console.log("Successfully applied signatures to all pages:", appliedSignatures.length);
-      
+
       // Note: Document read-only status is not automatically set
       // Users can continue to edit documents even after applying signatures
       console.log("Signatures applied successfully to document:", documentId);
-      
+
       res.json({ success: true, appliedSignatures });
     } catch (error: any) {
       console.error("Error applying signature:", error);
@@ -909,7 +911,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const { signatureId } = req.params;
       const { position } = req.body;
-      
+
       // Optimized: Direct update without additional logging
       await storage.updateSignaturePosition(signatureId, position);
       res.json({ success: true });
@@ -941,7 +943,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const { documentId } = req.params;
       const document = await storage.getDocument(documentId);
       const appliedSignatures = await storage.getDocumentSignatures(documentId);
-      
+
       if (!document) {
         return res.status(404).json({ error: "Document not found" });
       }
@@ -983,7 +985,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post("/api/documents/bulk-download", async (req, res) => {
     try {
       const { documentIds, userId } = req.body;
-      
+
       if (!documentIds || !Array.isArray(documentIds) || documentIds.length === 0) {
         return res.status(400).json({ error: "Document IDs array is required" });
       }
@@ -1015,7 +1017,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Import archiver dynamically
       const archiver = require('archiver');
-      
+
       // Create zip archive with low compression (PDFs are already compressed)
       const archive = archiver('zip', {
         zlib: { level: 0 }
@@ -1150,7 +1152,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       console.log('=== TEST ZIP ENDPOINT CALLED ===');
       const archiver = require('archiver');
-      
+
       // Create zip archive
       const archive = archiver('zip', {
         zlib: { level: 9 }
@@ -1198,27 +1200,27 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post("/api/test-single-pdf", async (req, res) => {
     try {
       const { documentId, userId } = req.body;
-      
+
       if (!documentId || !userId) {
         return res.status(400).json({ error: "Document ID and User ID are required" });
       }
 
       console.log('=== TEST SINGLE PDF ENDPOINT ===');
       const document = await storage.getDocument(documentId);
-      
+
       if (!document) {
         return res.status(404).json({ error: "Document not found" });
       }
-      
+
       if (document.userId !== userId) {
         return res.status(403).json({ error: "Access denied" });
       }
 
       console.log(`Processing document: ${document.originalName}`);
-      
+
       const appliedSignatures = await storage.getDocumentSignatures(document.id);
       console.log(`Found ${appliedSignatures.length} signatures`);
-      
+
       // Get signature data
       const signaturesToApply = [];
       for (const appliedSig of appliedSignatures) {
@@ -1264,10 +1266,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
       console.log("=== CERTIFICATE REQUEST ===");
       const { signatureId } = req.params;
       console.log("Signature ID:", signatureId);
-      
+
       const signature = await storage.getSignature(signatureId);
       console.log("Signature found:", !!signature);
-      
+
       if (!signature) {
         console.log("Signature not found for ID:", signatureId);
         return res.status(404).json({ error: "Signature not found" });
@@ -1276,10 +1278,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Import certificate service
       const { CertificateService } = require('./services/certificate');
       const certificateService = new CertificateService();
-      
+
       // Generate certificate ID
       const certificateId = certificateService.generateCertificateId();
-      
+
       // Prepare certificate data
       const certificateData = {
         signatureName: signature.name,
@@ -1291,17 +1293,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
         certificateId: certificateId,
         signatureImage: signature.signatureImage
       };
-      
+
       // Generate PDF certificate
       console.log("Generating PDF certificate...");
       const pdfBytes = await certificateService.generateAdobeStyleCertificate(certificateData);
       console.log("PDF generated, size:", pdfBytes.length, "bytes");
-      
+
       res.setHeader("Content-Type", "application/pdf");
       res.setHeader("Content-Disposition", `attachment; filename="${signature.name}-certificate.pdf"`);
       res.send(Buffer.from(pdfBytes));
       console.log("PDF sent to client");
-      
+
     } catch (error: any) {
       console.error('Certificate generation error:', error);
       res.status(500).json({ error: error.message || "Failed to generate certificate" });
@@ -1315,14 +1317,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const { documentId } = req.params;
       const { t } = req.query; // Cache busting parameter
       console.log("Document ID:", documentId, "Timestamp:", t);
-      
+
       const document = await storage.getDocument(documentId);
       console.log("Document found:", document ? "Yes" : "No");
-      
+
       if (!document) {
         console.error("Document not found for ID:", documentId);
-        return res.status(404).json({ 
-          error: "Document not found", 
+        return res.status(404).json({
+          error: "Document not found",
           documentId,
           message: "The requested document could not be found in the database"
         });
@@ -1344,11 +1346,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         console.error("File access error:", accessError);
         if (accessError.code === 'ENOENT') {
           console.error(`PDF file not found on disk: ${document.filePath}`);
-          
+
           // Clean up invalid database record since file is missing
           try {
             console.log(`Cleaning up invalid document record: ${document.id}`);
-            
+
             // Delete any applied signatures first
             const appliedSignatures = await storage.getDocumentSignatures(document.id);
             for (const sig of appliedSignatures) {
@@ -1359,20 +1361,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 console.error(`Failed to delete applied signature ${sig.id}:`, sigError);
               }
             }
-            
+
             // Delete the document record
             await storage.deleteDocument(document.id);
             console.log(`Successfully cleaned up invalid document: ${document.id}`);
-            
-            return res.status(404).json({ 
-              error: "Document cleaned up", 
+
+            return res.status(404).json({
+              error: "Document cleaned up",
               documentId: document.id,
               message: "The document has been automatically cleaned up due to missing file. Please re-upload if needed."
             });
           } catch (cleanupError) {
             console.error(`Failed to cleanup invalid document ${document.id}:`, cleanupError);
-            return res.status(500).json({ 
-              error: "Failed to cleanup invalid document", 
+            return res.status(500).json({
+              error: "Failed to cleanup invalid document",
               message: "Please contact support to resolve this issue."
             });
           }
@@ -1382,19 +1384,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Check if document has applied signatures with caching
       const appliedSignatures = await storage.getDocumentSignatures(documentId);
-      
+
       if (appliedSignatures.length > 0) {
         // Apply signatures for preview with performance optimizations
         console.log("Applying signatures for preview...");
         const signaturesToApply = [];
-        
+
         // Batch signature lookups for better performance
         const signatureIds = Array.from(new Set(appliedSignatures.map(sig => sig.signatureId)));
         const signatures = await Promise.all(
           signatureIds.map(id => storage.getSignature(id))
         );
         const signatureMap = new Map(signatures.filter(Boolean).map(sig => [sig!.id, sig!]));
-        
+
         for (const appliedSig of appliedSignatures) {
           const signature = signatureMap.get(appliedSig.signatureId);
           if (signature) {
@@ -1412,13 +1414,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
             });
           }
         }
-        
+
         // Apply signatures and serve the signed PDF
         const signedPdfBytes = await pdfService.applySignatureToPdf(
           document.filePath,
           signaturesToApply
         );
-        
+
         res.setHeader("Content-Type", "application/pdf");
         res.setHeader("Content-Length", signedPdfBytes.length.toString());
         res.setHeader("Cache-Control", "public, max-age=300"); // Cache for 5 minutes
@@ -1428,28 +1430,28 @@ export async function registerRoutes(app: Express): Promise<Server> {
       } else {
         // No signatures, serve original PDF with streaming for large files
         console.log("Reading PDF file...");
-        
+
         // Use streaming for better performance on large files
         const stat = await fs.stat(document.filePath);
         const fileSize = stat.size;
-        
+
         res.setHeader("Content-Type", "application/pdf");
         res.setHeader("Content-Length", fileSize.toString());
         res.setHeader("Cache-Control", "public, max-age=300"); // Cache for 5 minutes
         res.setHeader("ETag", `"${documentId}-${t || Date.now()}"`);
-        
+
         // Check if client has cached version
         const ifNoneMatch = req.headers['if-none-match'];
         if (ifNoneMatch === `"${documentId}-${t || Date.now()}"`) {
           return res.status(304).end(); // Not Modified
         }
-        
+
         // Stream the file for better performance
         const fileStream = fsSync.createReadStream(document.filePath);
         fileStream.pipe(res);
         console.log("Original PDF streamed successfully");
       }
-      
+
     } catch (error: any) {
       console.error("PDF view error:", error);
       console.error("Error stack:", error.stack);
@@ -1461,7 +1463,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get("/api/verify-email", async (req, res) => {
     try {
       const { token } = req.query;
-      
+
       if (!token || typeof token !== 'string') {
         return res.status(400).send(`
           <html>
@@ -1475,7 +1477,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const result = await authService.verifyEmail(token);
-      
+
       if (result.success) {
         res.send(`
           <html>
