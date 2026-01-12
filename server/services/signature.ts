@@ -1,6 +1,6 @@
 import { storage } from "../storage";
 import { CertificateService } from "./certificate";
-import { type InsertSignature, type DigitalSignature } from "../shared/schema";
+import { type InsertSignature, type DigitalSignature } from "../../shared/schema";
 import crypto from "crypto";
 
 export class SignatureService {

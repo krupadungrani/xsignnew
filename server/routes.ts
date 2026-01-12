@@ -8,10 +8,9 @@ import { emailService } from "./services/email";
 import { insertUserSchema, insertSignatureSchema } from "../shared/schema";
 import multer from "multer";
 import path from "path";
-import fs from "fs/promises";
 import { z } from "zod";
 import { db } from "./db";
-import { pdfDocuments } from "../shared/schema";
+import { pdfDocuments, type PdfDocument } from "../shared/schema";
 import crypto from "crypto";
 import { promises as fs } from "fs";
 import fsSync from "fs";
@@ -996,7 +995,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       console.log('Bulk download request:', { documentIds, userId });
 
       // Get all documents and verify they belong to the user
-      const documents = [];
+      const documents: PdfDocument[] = [];
       for (const documentId of documentIds) {
         const document = await storage.getDocument(documentId);
         if (!document) {

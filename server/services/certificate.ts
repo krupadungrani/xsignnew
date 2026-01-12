@@ -415,7 +415,7 @@ export class CertificateService {
       }
       
       // Basic validation - certificate exists and is properly formatted
-      return cert.serialNumber && cert.publicKey;
+      return Boolean(cert.serialNumber) && Boolean(cert.publicKey);
     } catch (error) {
       console.error('Certificate validation error:', error);
       return false;
