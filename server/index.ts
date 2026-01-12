@@ -111,14 +111,18 @@ app.use((req, res, next) => {
     throw err;
   });
 
-  // Setup frontend serving based on environment
-  if (process.env.NODE_ENV === "production") {
-    // Production: serve static built files
-    serveStatic(app);
-  } else {
-    // Development: use Vite middleware
-    await setupVite(app, server);
-  }
+// Setup frontend serving based on environment (Vercel-safe)
+const isProd =
+  process.env.VERCEL === "1" ||
+  process.env.NODE_ENV === "production";
+
+if (isProd) {
+  // Production: serve static built files
+  serveStatic(app);
+} else {
+  // Development: use Vite middleware
+  await setupVite(app, server);
+}
 
   const port = parseInt(process.env.PORT || "5000", 10);
   const host = process.env.HOST || "0.0.0.0";
