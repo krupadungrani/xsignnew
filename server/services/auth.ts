@@ -1,4 +1,4 @@
-import bcrypt from "bcrypt";
+import bcrypt from "bcryptjs";
 import { storage } from "../storage";
 import { type InsertUser } from "../../shared/schema";
 
@@ -12,7 +12,7 @@ export class AuthService {
 
     // Hash password
     const hashedPassword = await bcrypt.hash(userData.password, 12);
-    
+
     // Create user directly without email verification
     const createdUser = await storage.createUser({
       email: userData.email,
