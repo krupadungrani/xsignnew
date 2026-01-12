@@ -1,0 +1,42 @@
+services:
+  # Backend API Service
+  - type: web
+    name: digisign-pro-api
+    env: node
+    plan: free
+    buildCommand: cd server && npm install
+    startCommand: cd server && npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: digisign-pro-db
+          property: connectionString
+      - key: EMAIL_HOST
+        value: smtp.gmail.com
+      - key: EMAIL_PORT
+        value: 587
+      - key: EMAIL_USER
+        value: your-email@gmail.com
+      - key: EMAIL_PASS
+        value: your-app-password
+      - key: APP_URL
+        value: https://digisign-pro-api.onrender.com
+
+  # Frontend Web Service
+  - type: web
+    name: digisign-pro-web
+    env: static
+    plan: free
+    buildCommand: cd client && npm install && npm run build
+    staticPublishPath: ./client/dist
+    envVars:
+      - key: VITE_API_URL
+        value: https://digisign-pro-api.onrender.com
+
+databases:
+  - name: digisign-pro-db
+    databaseName: digisign_pro
+    user: digisign_user
+    plan: free
