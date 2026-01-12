@@ -11,7 +11,7 @@ neonConfig.webSocketConstructor = ws;
 console.log("Loaded DATABASE_URL:", process.env.DATABASE_URL);
 
 if (!process.env.DATABASE_URL) {
-  throw new Error(
+  console.warn(
     "DATABASE_URL must be set. Did you forget to provision a database? in Vercel, make sure to add it to Environment Variables."
   );
 }
