@@ -36,8 +36,10 @@ export default function Dashboard() {
 
   const { data: documentsData, refetch: refetchDocuments } = usePdfDocuments(user?.id || "");
   const { data: signaturesData } = useDigitalSignatures(user?.id || "");
-  const documents = documentsData?.documents || [];
-  const signatures = signaturesData?.signatures || [];
+  const documents: PdfDocument[] =
+    ((documentsData as any)?.documents as PdfDocument[]) || [];
+  const signatures =
+    ((signaturesData as any)?.signatures as any[]) || [];
 
   useEffect(() => {
     if (!isLoading && !user) {

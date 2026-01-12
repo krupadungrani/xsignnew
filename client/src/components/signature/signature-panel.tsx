@@ -98,7 +98,8 @@ export function SignaturePanel({
   const applySignature = useApplySignature();
   const removeSignature = useRemoveSignature();
 
-  const signatures = signaturesData?.signatures || [];
+  const signatures: DigitalSignature[] =
+    ((signaturesData as any)?.signatures as DigitalSignature[]) || [];
   const selectedSignature = signatures.find(s => s.id === selectedSignatureId);
 
   const gridPositions = [

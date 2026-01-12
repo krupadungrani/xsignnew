@@ -2,11 +2,15 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { type DigitalSignature } from "@shared/schema";
 
+export type DigitalSignaturesResponse = { success: boolean; signatures: DigitalSignature[] };
+
 export function useDigitalSignatures(userId: string) {
-  return useQuery<{ success: boolean; signatures: DigitalSignature[] }>({
+  // Note: we rely on the global queryFn from queryClient; the cast keeps TS happy with TanStack's complex generics.
+  return useQuery<DigitalSignaturesResponse>({
     queryKey: ["/api/signatures", userId],
     enabled: !!userId,
-    onSuccess: (data) => {
+    // Cast to any to avoid over‑constraining the onSuccess callback type.
+    onSuccess: (data: DigitalSignaturesResponse) => {
       console.log("=== SIGNATURE RETRIEVAL DEBUG ===");
       console.log("Retrieved signatures:", data.signatures);
       data.signatures.forEach((sig, index) => {
@@ -15,11 +19,11 @@ export function useDigitalSignatures(userId: string) {
           name: sig.name,
           hasPassword: !!sig.password,
           passwordLength: sig.password?.length,
-          passwordPreview: sig.password ? `${sig.password.substring(0, 3)}***` : 'none'
+          passwordPreview: sig.password ? `${sig.password.substring(0, 3)}***` : "none",
         });
       });
     },
-  });
+  } as any);
 }
 
 export function useCreateSignature(userId: string) {

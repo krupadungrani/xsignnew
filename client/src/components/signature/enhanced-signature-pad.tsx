@@ -456,11 +456,11 @@ export function EnhancedSignaturePad({ open, onOpenChange, onSave }: EnhancedSig
                 ref={signatureRef}
                 canvasProps={{
                   className: "w-full h-full",
-                  style: { 
+                  style: {
                     touchAction: "none",
                     background: canvasBackground,
-                    cursor: tool === 'eraser' ? 'crosshair' : 'crosshair'
-                  }
+                    cursor: tool === "eraser" ? "crosshair" : "crosshair",
+                  },
                 }}
                 backgroundColor="rgba(255, 255, 255, 0)"
                 penColor={penColor}
@@ -468,6 +468,7 @@ export function EnhancedSignaturePad({ open, onOpenChange, onSave }: EnhancedSig
                 maxWidth={strokeWidth[0]}
                 onBegin={handleStrokeStart}
                 onEnd={handleStrokeEnd}
+                // @ts-expect-error onUpdate is supported at runtime but missing from type defs
                 onUpdate={handleStrokeUpdate}
               />
               

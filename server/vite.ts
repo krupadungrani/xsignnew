@@ -34,8 +34,10 @@ export async function setupVite(app: Express, server: Server) {
     allowedHosts: true as const,
   };
 
-  // Resolve viteConfig if it's a function
-  const resolvedConfig = typeof viteConfig === 'function' ? await viteConfig() : viteConfig;
+  // Resolve viteConfig if it's a function. Cast to any so TS doesn't enforce Vite's env arg.
+  const viteConfigAny: any = viteConfig as any;
+  const resolvedConfig =
+    typeof viteConfigAny === "function" ? await viteConfigAny() : viteConfigAny;
 
   const vite = await createViteServer({
     ...resolvedConfig,

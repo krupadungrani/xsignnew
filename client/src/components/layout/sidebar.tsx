@@ -125,8 +125,10 @@ export function Sidebar({
   });
 
   // Use the documents and signatures from props, with fallback to local data
-  const displayDocuments = documents.length > 0 ? documents : (documentsData?.documents || []);
-  const displaySignatures = signatures.length > 0 ? signatures : (signaturesData?.signatures || []);
+  const displayDocuments: PdfDocument[] =
+    documents.length > 0 ? documents : ((documentsData as any)?.documents || []);
+  const displaySignatures: DigitalSignature[] =
+    signatures.length > 0 ? signatures : ((signaturesData as any)?.signatures || []);
 
   const handleSignatureClick = (signature: DigitalSignature) => {
     setSelectedSignature(signature);
