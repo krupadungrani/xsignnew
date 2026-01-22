@@ -2,6 +2,7 @@ import express, { type Request, type Response, type NextFunction } from "express
 import cors from "cors";
 import compression from "compression";
 import { registerRoutes } from "../server/routes";
+import { checkDatabaseHealth } from "../server/db";
 
 // Simple logger (mirrors server/vite.ts style without importing Vite)
 function log(message: string, source = "express") {
@@ -19,7 +20,7 @@ function log(message: string, source = "express") {
 // Create a single Express app instance reused across invocations
 const app = express();
 
-// ===== CORS CONFIGURATION (same logic as server/index.ts) =====
+// ===== CORS CONFIGURATION =====
 const allowedOrigins = [
   "http://localhost:3000",
   "http://localhost:5000",
@@ -32,6 +33,7 @@ const allowedOrigins = [
   "http://0.0.0.0:5173",
 ];
 
+// Add production URLs if environment variables exist
 if (process.env.NODE_ENV === "production") {
   if (process.env.VERCEL_URL) {
     allowedOrigins.push(`https://${process.env.VERCEL_URL}`);
@@ -41,45 +43,47 @@ if (process.env.NODE_ENV === "production") {
   }
 }
 
-app.use(
-  cors({
-    origin: (origin, callback) => {
-      // Allow requests with no origin (like mobile apps, curl, Postman)
-      if (!origin || allowedOrigins.includes(origin)) {
+app.use(cors({
+  origin: (origin, callback) => {
+    // Allow requests with no origin (like mobile apps, curl, Postman)
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      // In development, allow all for easier testing
+      if (process.env.NODE_ENV !== "production") {
         callback(null, true);
       } else {
-        // In development, allow all for easier testing
-        if (process.env.NODE_ENV !== "production") {
-          callback(null, true);
-        } else {
-          callback(new Error("Not allowed by CORS policy"));
-        }
+        callback(new Error("Not allowed by CORS policy"));
       }
-    },
-    credentials: true,
-    methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization", "Accept"],
-    maxAge: 3600,
-    optionsSuccessStatus: 200,
-  })
-);
+    }
+  },
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "Accept"],
+  maxAge: 3600,
+  optionsSuccessStatus: 200
+}));
 
-// ===== COMPRESSION & BODY PARSING =====
-app.use(
-  compression({
-    level: 6,
-    threshold: 1024, // Only compress responses larger than 1KB
-  })
-);
+// ===== COMPRESSION MIDDLEWARE =====
+app.use(compression({
+  level: 6,
+  threshold: 1024 // Only compress responses larger than 1KB
+}));
 
-app.use(express.json({ limit: "100mb" }));
-app.use(express.urlencoded({ extended: false, limit: "100mb" }));
+// Increase body parser limits for large file uploads
+app.use(express.json({ limit: '100mb' }));
+app.use(express.urlencoded({ extended: false, limit: '100mb' }));
 
 // Increase timeout for large file uploads
 app.use((req, res, next) => {
-  if (req.path.includes("/upload") || req.path.includes("/api/documents")) {
-    req.setTimeout(300000); // 5 minutes
-    res.setTimeout(300000); // 5 minutes
+  // Set timeout to 5 minutes for upload endpoints
+  if (req.path.includes('/upload') || req.path.includes('/api/documents')) {
+    req.setTimeout(300000, () => {
+      console.log('Request timeout reached');
+    });
+    res.setTimeout(300000, () => {
+      console.log('Response timeout reached');
+    });
   }
   next();
 });
@@ -88,14 +92,13 @@ app.use((req, res, next) => {
 app.use((req, res, next) => {
   const start = Date.now();
   const path = req.path;
-  let capturedJsonResponse: Record<string, any> | undefined;
+  let capturedJsonResponse: Record<string, any> | undefined = undefined;
 
   const originalResJson = res.json.bind(res);
-  (res as Response).json = function (bodyJson: any, ...args: any[]) {
+  (res as any).json = function(bodyJson: any, ...args: any[]) {
     capturedJsonResponse = bodyJson;
-    // @ts-expect-error - spread args to original json
     return originalResJson(bodyJson, ...args);
-  } as Response["json"];
+  };
 
   res.on("finish", () => {
     const duration = Date.now() - start;
@@ -120,21 +123,103 @@ app.use((req, res, next) => {
   next();
 });
 
-// Register all API routes (reuses existing Express routes)
-const routesReady = registerRoutes(app);
+// Store the Promise that resolves when routes are registered
+let routesReady: Promise<void> | null = null;
 
-// Global error handler (same semantics as server/index.ts)
+// Initialize routes once
+async function initializeRoutes() {
+  if (!routesReady) {
+    routesReady = (async () => {
+      try {
+        console.log("Starting route registration...");
+        await registerRoutes(app);
+        log("Routes registered successfully");
+      } catch (error) {
+        console.error("Failed to register routes:", error);
+        routesReady = null; // Reset so we can try again
+        throw error;
+      }
+    })();
+  }
+  return routesReady;
+}
+
+// Global error handler with enhanced logging
 app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
   const status = err?.status || err?.statusCode || 500;
   const message = err?.message || "Internal Server Error";
 
-  res.status(status).json({ message });
-  // eslint-disable-next-line no-console
-  console.error(err);
+  console.error("Express Error:", {
+    message,
+    status,
+    stack: err?.stack,
+    code: err?.code,
+    name: err?.name
+  });
+
+  // Don't expose internal error details in production
+  const responseMessage = process.env.NODE_ENV === "production" && status === 500
+    ? "Internal Server Error"
+    : message;
+
+  res.status(status).json({ 
+    message: responseMessage,
+    ...(process.env.NODE_ENV !== "production" && { 
+      error: err.message,
+      stack: err.stack 
+    })
+  });
 });
 
-// Vercel serverless function entrypoint
-export default async function handler(req: any, res: any) {
-  await routesReady; // ensure routes are attached
-  return app(req, res);
+// Enhanced Vercel serverless function entrypoint with better error handling
+export default async function handler(req: Request, res: Response) {
+  const requestId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  
+  console.log(`[${requestId}] Incoming request:`, {
+    method: req.method,
+    path: req.path,
+    query: req.query
+  });
+
+  try {
+    // Check database health first
+    const dbHealth = await checkDatabaseHealth();
+    if (!dbHealth.healthy) {
+      console.error(`[${requestId}] Database health check failed:`, dbHealth.error);
+      return res.status(503).json({
+        message: "Service temporarily unavailable - database connection failed",
+        requestId,
+        retryAfter: 30
+      });
+    }
+
+    // Ensure routes are registered before handling request
+    console.log(`[${requestId}] Initializing routes...`);
+    await initializeRoutes();
+    console.log(`[${requestId}] Routes ready, processing request...`);
+    
+    // Use the Express app to handle the request
+    return app(req, res);
+  } catch (error: any) {
+    console.error(`[${requestId}] Handler error:`, {
+      message: error.message,
+      stack: error.stack,
+      code: error.code
+    });
+    
+    // Check if it's a database connection error
+    if (error.message?.includes('database') || error.code === '57P01' || error.code === 'ECONNREFUSED') {
+      return res.status(503).json({
+        message: "Service temporarily unavailable - database connection failed",
+        requestId,
+        retryAfter: 30
+      });
+    }
+    
+    res.status(500).json({ 
+      message: "Internal Server Error",
+      requestId
+    });
+  }
 }
+

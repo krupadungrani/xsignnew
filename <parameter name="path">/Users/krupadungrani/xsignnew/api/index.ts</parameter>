@@ -1,0 +1,906 @@
+<parameter name="content">
+import express, { type Request, type Response, type NextFunction } from "express";
+import cors from "cors";
+import compression from "compression";
+import { createServer, type Server } from "http";
+import { storage } from "../server/storage";
+import { authService } from "../server/services/auth";
+import { signatureService } from "../server/services/signature";
+import { pdfService } from "../server/services/pdf";
+import { emailService } from "../server/services/email";
+import { insertUserSchema, pdfDocuments } from "../shared/schema";
+import multer from "multer";
+import { z } from "zod";
+import { db } from "../server/db";
+import crypto from "crypto";
+import { promises as fs } from "fs";
+import os from "os";
+
+// Simple logger
+function log(message: string, source = "express") {
+  const formattedTime = new Date().toLocaleTimeString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: true,
+  });
+  console.log(`${formattedTime} [${source}] ${message}`);
+}
+
+// Utility function for safe file deletion
+async function safeDeleteFile(filePath: string, context: string = "file"): Promise<boolean> {
+  try {
+    try {
+      await fs.access(filePath);
+    } catch (accessError: any) {
+      if (accessError.code === 'ENOENT') {
+        console.log(`${context} already deleted or not found: ${filePath}`);
+        return true;
+      }
+      throw accessError;
+    }
+    await fs.unlink(filePath);
+    console.log(`Successfully deleted ${context}: ${filePath}`);
+    return true;
+  } catch (error: any) {
+    if (error.code === 'ENOENT') {
+      console.log(`${context} already deleted or not found: ${filePath}`);
+      return true;
+    } else {
+      console.error(`Failed to delete ${context} ${filePath}:`, error);
+      return false;
+    }
+  }
+}
+
+// Configure multer for file uploads
+const upload = multer({
+  dest: os.tmpdir(),
+  limits: {
+    fileSize: 100 * 1024 * 1024,
+    fieldSize: 10 * 1024 * 1024,
+    files: 10,
+  },
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype === "application/pdf") {
+      cb(null, true);
+    } else {
+      cb(new Error("Only PDF files are allowed"));
+    }
+  },
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => {
+      cb(null, os.tmpdir());
+    },
+    filename: (req, file, cb) => {
+      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+      cb(null, file.fieldname + '-' + uniqueSuffix + '.pdf');
+    }
+  })
+});
+
+// Create Express app
+const app = express();
+
+// ===== CORS CONFIGURATION =====
+const allowedOrigins = [
+  "http://localhost:3000",
+  "http://localhost:5000",
+  "http://localhost:5173",
+  "http://127.0.0.1:3000",
+  "http://127.0.0.1:5000",
+  "http://127.0.0.1:5173",
+  "http://0.0.0.0:3000",
+  "http://0.0.0.0:5000",
+  "http://0.0.0.0:5173",
+];
+
+if (process.env.NODE_ENV === "production") {
+  if (process.env.VERCEL_URL) {
+    allowedOrigins.push(`https://${process.env.VERCEL_URL}`);
+  }
+  if (process.env.FRONTEND_URL) {
+    allowedOrigins.push(process.env.FRONTEND_URL);
+  }
+}
+
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        if (process.env.NODE_ENV !== "production") {
+          callback(null, true);
+        } else {
+          callback(new Error("Not allowed by CORS policy"));
+        }
+      }
+    },
+    credentials: true,
+    methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization", "Accept"],
+    maxAge: 3600,
+    optionsSuccessStatus: 200,
+  })
+);
+
+// ===== COMPRESSION & BODY PARSING =====
+app.use(
+  compression({
+    level: 6,
+    threshold: 1024,
+  })
+);
+
+app.use(express.json({ limit: "100mb" }));
+app.use(express.urlencoded({ extended: false, limit: "100mb" }));
+
+// Increase timeout for large file uploads
+app.use((req, res, next) => {
+  if (req.path.includes("/upload") || req.path.includes("/api/documents")) {
+    req.setTimeout(300000);
+    res.setTimeout(300000);
+  }
+  next();
+});
+
+// Basic request logging
+app.use((req, res, next) => {
+  const start = Date.now();
+  const path = req.path;
+  let capturedJsonResponse: Record<string, any> | undefined;
+
+  const originalResJson = res.json.bind(res);
+  (res as Response).json = function (bodyJson: any, ...args: any[]) {
+    capturedJsonResponse = bodyJson;
+    return originalResJson(bodyJson, ...args);
+  } as Response["json"];
+
+  res.on("finish", () => {
+    const duration = Date.now() - start;
+    if (path.startsWith("/api")) {
+      let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
+      if (capturedJsonResponse) {
+        try {
+          logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
+        } catch {}
+      }
+      if (logLine.length > 80) {
+        logLine = logLine.slice(0, 79) + "…";
+      }
+      log(logLine);
+    }
+  });
+  next();
+});
+
+// ===== REGISTER ROUTES =====
+async function registerRoutes(app: express.Express): Promise<Server> {
+  // Health check endpoint
+  app.get("/api/health", async (req: Request, res: Response) => {
+    try {
+      res.json({
+        status: "ok",
+        timestamp: new Date().toISOString(),
+        uptime: process.uptime(),
+        memory: process.memoryUsage()
+      });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Test PDF processing endpoint
+  app.post("/api/test/pdf", upload.single("pdf"), async (req: Request, res: Response) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ error: "No PDF file uploaded" });
+      }
+      const file = req.file;
+      const pageCount = await pdfService.getPageCount(file.path);
+      const pageSizes = await pdfService.getPageSizes(file.path);
+      await safeDeleteFile(file.path, "test file");
+      res.json({
+        success: true,
+        message: "PDF processing test successful",
+        pageCount,
+        pageSizes,
+        fileInfo: { filename: file.filename, size: file.size, mimetype: file.mimetype }
+      });
+    } catch (error: any) {
+      console.error("PDF test error:", error);
+      if (req.file) {
+        await safeDeleteFile(req.file.path, "test file");
+      }
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  // Users endpoint
+  app.get("/api/users", async (req: Request, res: Response) => {
+    try {
+      const users = await storage.getAllUsers();
+      const safeUsers = users.slice(0, 5).map(user => ({
+        id: user.id,
+        email: user.email,
+        fullName: user.fullName,
+        companyName: user.companyName
+      }));
+      res.json({ success: true, users: safeUsers });
+    } catch (error: any) {
+      console.error("Error fetching users:", error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Auth routes
+  app.post("/api/auth/register", async (req: Request, res: Response) => {
+    try {
+      const userData = insertUserSchema.parse(req.body);
+      const user = await authService.register(userData);
+      res.json({ success: true, user });
+    } catch (error: any) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  app.post("/api/auth/login", async (req: Request, res: Response) => {
+    try {
+      const { email, password } = req.body;
+      const user = await authService.login(email, password);
+      res.json({ success: true, user });
+    } catch (error: any) {
+      res.status(401).json({ error: error.message });
+    }
+  });
+
+  app.post("/api/auth/verify-email", async (req: Request, res: Response) => {
+    try {
+      const { token } = req.body;
+      await authService.verifyEmail(token);
+      res.json({ success: true });
+    } catch (error: any) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  app.post("/api/auth/resend-verification", async (req: Request, res: Response) => {
+    try {
+      const { email } = req.body;
+      if (!email) {
+        return res.status(400).json({ error: "Email is required" });
+      }
+      const user = await storage.getUserByEmail(email);
+      if (!user) {
+        return res.status(404).json({ error: "User not found" });
+      }
+      if (user.isVerified) {
+        return res.status(400).json({ error: "User is already verified" });
+      }
+      const verificationToken = crypto.randomBytes(32).toString('hex');
+      await storage.updateUser(user.id, { verificationToken });
+      await emailService.sendVerificationEmail(user.email, user.fullName, verificationToken);
+      res.json({ success: true, message: "Verification email sent" });
+    } catch (error: any) {
+      console.error("Resend verification error:", error);
+      res.status(500).json({ error: "Failed to resend verification email" });
+    }
+  });
+
+  // Debug endpoint
+  app.post("/api/debug/signatures", (req: Request, res: Response) => {
+    res.json({
+      message: "Debug endpoint hit",
+      body: req.body,
+      bodyKeys: Object.keys(req.body || {}),
+      timestamp: new Date().toISOString()
+    });
+  });
+
+  // Signature routes
+  app.post("/api/signatures", async (req: Request, res: Response) => {
+    try {
+      const { userId, email, signatureImage, ...signatureData } = req.body;
+
+      if (!userId) {
+        return res.status(400).json({ error: "userId is required" });
+      }
+      if (!email) {
+        return res.status(400).json({ error: "email is required" });
+      }
+
+      const requestSchema = z.object({
+        userId: z.string(),
+        name: z.string(),
+        fullName: z.string(),
+        companyName: z.string(),
+        location: z.string(),
+        timeZone: z.string(),
+        signatureImage: z.string().nullable().optional(),
+        password: z.string().optional(),
+      });
+
+      const validatedRequestData = requestSchema.parse({ userId, ...signatureData, signatureImage });
+      const { userId: _, ...serviceData } = validatedRequestData;
+
+      const serviceSchema = z.object({
+        name: z.string(),
+        fullName: z.string(),
+        companyName: z.string(),
+        location: z.string(),
+        timeZone: z.string(),
+        signatureImage: z.string().nullable().optional(),
+        password: z.string().optional(),
+      });
+
+      const validatedServiceData = serviceSchema.parse(serviceData);
+      const serviceSignatureData = validatedServiceData as any;
+
+      const signature = await signatureService.createDigitalSignature(
+        userId,
+        serviceSignatureData,
+        email
+      );
+
+      res.json({ success: true, signature });
+    } catch (error: any) {
+      console.error("Error creating signature:", error);
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  app.get("/api/signatures/:userId", async (req: Request, res: Response) => {
+    try {
+      const { userId } = req.params;
+      const signatures = await signatureService.getUserSignatures(userId);
+      res.json({ success: true, signatures });
+    } catch (error: any) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  app.delete("/api/signatures/:signatureId", async (req: Request, res: Response) => {
+    try {
+      const { signatureId } = req.params;
+      const { userId } = req.body;
+      await signatureService.deleteSignature(signatureId, userId);
+      res.json({ success: true });
+    } catch (error: any) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  // PDF document routes
+  app.post("/api/documents/upload", upload.array("pdfs", 10), async (req: Request, res: Response) => {
+    const startTime = Date.now();
+    try {
+      const { userId } = req.body;
+      const files = req.files as Express.Multer.File[];
+
+      if (!userId) {
+        return res.status(400).json({ error: "userId is required" });
+      }
+      if (!files || files.length === 0) {
+        return res.status(400).json({ error: "No files uploaded" });
+      }
+
+      const documents = [];
+
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+
+        try {
+          await fs.access(file.path);
+          const document = await storage.createDocument({
+            userId,
+            fileName: file.filename,
+            originalName: file.originalname,
+            fileSize: file.size,
+            filePath: file.path,
+            pageCount: 0,
+            pageSizes: "[]",
+            status: "pending",
+          });
+
+          try {
+            const { pageCount, pageSizes } = await pdfService.processDocument(file.path);
+            await storage.updateDocumentStatus(document.id, "processed", pageCount, JSON.stringify(pageSizes));
+            documents.push(document);
+          } catch (processingError: any) {
+            console.error(`Error processing PDF ${file.filename}:`, processingError);
+            await storage.updateDocumentStatus(document.id, "error");
+            throw processingError;
+          }
+        } catch (fileError: any) {
+          console.error(`Error processing file ${file.filename}:`, fileError);
+          await safeDeleteFile(file.path, `uploaded file ${file.originalname}`);
+          throw new Error(`Failed to process PDF file ${file.originalname}: ${fileError.message}`);
+        }
+      }
+
+      const totalTime = (Date.now() - startTime) / 1000;
+      res.json({ success: true, documents });
+    } catch (error: any) {
+      console.error(`PDF upload failed:`, error);
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  // Document management endpoints
+  app.post("/api/documents/fix-status", async (req: Request, res: Response) => {
+    try {
+      const allDocuments = await db.select().from(pdfDocuments);
+      let updatedCount = 0;
+      for (const doc of allDocuments) {
+        if (!doc.status) {
+          await storage.updateDocumentStatus(doc.id, "processed");
+          updatedCount++;
+        }
+      }
+      res.json({ success: true, updatedCount });
+    } catch (error: any) {
+      console.error("Error fixing document status:", error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.post("/api/documents/cleanup", async (req: Request, res: Response) => {
+    try {
+      const allDocuments = await db.select().from(pdfDocuments);
+      let cleanedUpCount = 0;
+      let validCount = 0;
+      let errorCount = 0;
+
+      for (const doc of allDocuments) {
+        try {
+          await fs.access(doc.filePath);
+          validCount++;
+        } catch (accessError: any) {
+          if (accessError.code === 'ENOENT') {
+            try {
+              const appliedSignatures = await storage.getDocumentSignatures(doc.id);
+              for (const sig of appliedSignatures) {
+                try { await storage.removeSignature(sig.id); } catch {}
+              }
+              await storage.deleteDocument(doc.id);
+              cleanedUpCount++;
+            } catch (cleanupError) {
+              errorCount++;
+            }
+          } else {
+            errorCount++;
+          }
+        }
+      }
+
+      res.json({ success: true, cleanedUpCount, validCount, errorCount, totalProcessed: allDocuments.length });
+    } catch (error: any) {
+      console.error("Error during cleanup:", error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.get("/api/documents/:userId", async (req: Request, res: Response) => {
+    try {
+      const { userId } = req.params;
+      const documents = await storage.getUserDocuments(userId);
+      const validDocuments = [];
+      let cleanedUpCount = 0;
+
+      for (const doc of documents) {
+        try {
+          await fs.access(doc.filePath);
+          if (!doc.status) {
+            await storage.updateDocumentStatus(doc.id, "processed");
+            doc.status = "processed";
+          }
+          validDocuments.push(doc);
+        } catch (accessError: any) {
+          if (accessError.code === 'ENOENT') {
+            try {
+              const appliedSignatures = await storage.getDocumentSignatures(doc.id);
+              for (const sig of appliedSignatures) {
+                try { await storage.removeSignature(sig.id); } catch {}
+              }
+              await storage.deleteDocument(doc.id);
+              cleanedUpCount++;
+            } catch {}
+          } else {
+            validDocuments.push(doc);
+          }
+        }
+      }
+
+      res.json({ success: true, documents: validDocuments, cleanedUpCount, totalProcessed: documents.length });
+    } catch (error: any) {
+      console.error("Error fetching documents:", error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.delete("/api/documents/:documentId", async (req: Request, res: Response) => {
+    try {
+      const { documentId } = req.params;
+      const document = await storage.getDocument(documentId);
+
+      if (!document) {
+        return res.status(404).json({ error: "Document not found" });
+      }
+
+      const appliedSignatures = await storage.getDocumentSignatures(documentId);
+      const fileDeleted = await safeDeleteFile(document.filePath, "document file");
+      await storage.deleteDocument(documentId);
+
+      res.json({ success: true, message: "Document deleted successfully", fileDeleted, signaturesDeleted: appliedSignatures.length });
+    } catch (error: any) {
+      console.error("Document deletion error:", error);
+      res.status(500).json({ error: "Failed to delete document", details: error.message });
+    }
+  });
+
+  // Debug endpoint
+  app.get("/api/debug/signatures/:documentId", async (req: Request, res: Response) => {
+    try {
+      const { documentId } = req.params;
+      const document = await storage.getDocument(documentId);
+      if (!document) {
+        return res.status(404).json({ error: "Document not found" });
+      }
+
+      const appliedSignatures = await storage.getDocumentSignatures(documentId);
+      res.json({
+        success: true,
+        document: { id: document.id, fileName: document.fileName, pageCount: document.pageCount, userId: document.userId },
+        appliedSignatures: appliedSignatures.map(sig => ({ id: sig.id, signatureId: sig.signatureId, pageNumber: sig.pageNumber, position: sig.position, appliedAt: sig.appliedAt })),
+        totalSignatures: appliedSignatures.length
+      });
+    } catch (error: any) {
+      console.error("Debug endpoint error:", error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Applied signature routes
+  app.post("/api/documents/:documentId/signatures", async (req: Request, res: Response) => {
+    try {
+      const { documentId } = req.params;
+      const { signatureId, pageNumbers, position, password } = req.body;
+
+      if (!signatureId || !pageNumbers || !position) {
+        return res.status(400).json({ error: "Missing required fields: signatureId, pageNumbers, and position are required" });
+      }
+
+      if (!Array.isArray(pageNumbers) || pageNumbers.length === 0) {
+        return res.status(400).json({ error: "pageNumbers must be a non-empty array" });
+      }
+
+      const document = await storage.getDocument(documentId);
+      if (!document) {
+        return res.status(404).json({ error: "Document not found", documentId });
+      }
+
+      const signature = await storage.getSignature(signatureId);
+      if (!signature) {
+        return res.status(404).json({ error: "Signature not found" });
+      }
+
+      if (signature.password && signature.password.trim() !== "") {
+        if (!password || password.trim() === "") {
+          return res.status(401).json({ error: "Password required", message: "This signature is password protected." });
+        }
+        if (password !== signature.password) {
+          return res.status(401).json({ error: "Invalid password", message: "The provided password is incorrect." });
+        }
+      }
+
+      const invalidPages = pageNumbers.filter(page => page < 1 || page > document.pageCount);
+      if (invalidPages.length > 0) {
+        return res.status(400).json({ error: `Invalid page numbers: ${invalidPages.join(', ')}. Document has ${document.pageCount} pages.` });
+      }
+
+      const appliedSignatures = [];
+      for (const pageNumber of pageNumbers) {
+        const appliedSignature = await storage.applySignature({ documentId, signatureId, pageNumber, position }, pageNumbers.length > 1);
+        appliedSignatures.push(appliedSignature);
+      }
+
+      res.json({ success: true, appliedSignatures });
+    } catch (error: any) {
+      console.error("Error applying signature:", error);
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  app.get("/api/documents/:documentId/signatures", async (req: Request, res: Response) => {
+    try {
+      const { documentId } = req.params;
+      const signatures = await storage.getDocumentSignatures(documentId);
+      res.json({ success: true, signatures });
+    } catch (error: any) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  app.delete("/api/documents/:documentId/signatures/:signatureId", async (req: Request, res: Response) => {
+    try {
+      const { signatureId } = req.params;
+      await storage.removeSignature(signatureId);
+      res.json({ success: true });
+    } catch (error: any) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  app.delete("/api/documents/:documentId/signatures/page/:pageNumber", async (req: Request, res: Response) => {
+    try {
+      const { documentId, pageNumber } = req.params;
+      await storage.removeSignaturesFromPage(documentId, parseInt(pageNumber));
+      res.json({ success: true });
+    } catch (error: any) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  app.put("/api/documents/:documentId/signatures/:signatureId/position", async (req: Request, res: Response) => {
+    try {
+      const { signatureId } = req.params;
+      const { position } = req.body;
+      await storage.updateSignaturePosition(signatureId, position);
+      res.json({ success: true });
+    } catch (error: any) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  // PDF download with signatures
+  app.get("/api/documents/:documentId/download", async (req: Request, res: Response) => {
+    try {
+      const { documentId } = req.params;
+      const document = await storage.getDocument(documentId);
+      const appliedSignatures = await storage.getDocumentSignatures(documentId);
+
+      if (!document) {
+        return res.status(404).json({ error: "Document not found" });
+      }
+
+      const signaturesToApply = [];
+      for (const appliedSig of appliedSignatures) {
+        const signature = await storage.getSignature(appliedSig.signatureId);
+        if (signature) {
+          signaturesToApply.push({
+            pageNumber: appliedSig.pageNumber,
+            position: appliedSig.position as any,
+            signatureData: { fullName: signature.fullName, companyName: signature.companyName, location: signature.location, timestamp: appliedSig.appliedAt || new Date(), timeZone: signature.timeZone, signatureImage: signature.signatureImage || undefined },
+          });
+        }
+      }
+
+      const signedPdfBytes = await pdfService.applySignatureToPdf(document.filePath, signaturesToApply);
+
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Content-Disposition", `attachment; filename="${document.originalName}"`);
+      res.send(Buffer.from(signedPdfBytes));
+    } catch (error: any) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  // Bulk download
+  app.post("/api/documents/bulk-download", async (req: Request, res: Response) => {
+    try {
+      const { documentIds, userId } = req.body;
+      if (!documentIds || !Array.isArray(documentIds) || documentIds.length === 0) {
+        return res.status(400).json({ error: "Document IDs array is required" });
+      }
+      if (!userId) {
+        return res.status(400).json({ error: "User ID is required" });
+      }
+
+      const documents = [];
+      for (const documentId of documentIds) {
+        const document = await storage.getDocument(documentId);
+        if (!document) {
+          return res.status(404).json({ error: `Document ${documentId} not found` });
+        }
+        if (document.userId !== userId) {
+          return res.status(403).json({ error: `Access denied for document ${documentId}` });
+        }
+        documents.push(document);
+      }
+
+      const archiver = require('archiver');
+      const archive = archiver('zip', { zlib: { level: 0 } });
+
+      archive.on('error', (err: any) => {
+        if (!res.headersSent) res.status(500).json({ error: 'Archive creation failed' });
+      });
+
+      res.setHeader('Content-Type', 'application/zip');
+      res.setHeader('Content-Disposition', 'attachment; filename="XSignature.zip"');
+      archive.pipe(res);
+
+      const usedFilenames = new Map<string, number>();
+      const getUniqueFilename = (originalName: string) => {
+        let finalFilename = originalName;
+        if (usedFilenames.has(originalName)) {
+          const count = usedFilenames.get(originalName)! + 1;
+          usedFilenames.set(originalName, count);
+          const lastDotIndex = originalName.lastIndexOf('.');
+          if (lastDotIndex > 0) {
+            finalFilename = `${originalName.substring(0, lastDotIndex)} (${count})${originalName.substring(lastDotIndex)}`;
+          } else {
+            finalFilename = `${originalName} (${count})`;
+          }
+        } else {
+          usedFilenames.set(originalName, 1);
+        }
+        return finalFilename;
+      };
+
+      const maxConcurrency = Math.min(3, documents.length);
+      let currentIndex = 0;
+      let completed = 0;
+
+      const runNext = async (): Promise<void> => {
+        if (currentIndex >= documents.length) {
+          if (completed === documents.length) archive.finalize();
+          return;
+        }
+        const myIndex = currentIndex++;
+        const document = documents[myIndex];
+        completed++;
+
+        try {
+          const appliedSignatures = await storage.getDocumentSignatures(document.id);
+          const signaturesToApply = [];
+          for (const appliedSig of appliedSignatures) {
+            const signature = await storage.getSignature(appliedSig.signatureId);
+            if (signature) {
+              signaturesToApply.push({
+                pageNumber: appliedSig.pageNumber,
+                position: appliedSig.position as any,
+                signatureData: { fullName: signature.fullName, companyName: signature.companyName, location: signature.location, timestamp: appliedSig.appliedAt || new Date(), timeZone: signature.timeZone, signatureImage: signature.signatureImage || undefined },
+              });
+            }
+          }
+
+          const signedPdfBytes = await pdfService.applySignatureToPdf(document.filePath, signaturesToApply);
+          if (signedPdfBytes && signedPdfBytes.length > 0) {
+            const pdfBuffer = Buffer.isBuffer(signedPdfBytes) ? signedPdfBytes : Buffer.from(signedPdfBytes);
+            archive.append(pdfBuffer, { name: getUniqueFilename(document.originalName), date: new Date(), store: true });
+          }
+        } catch (err) {
+          console.error(`Error processing ${document.originalName}:`, err);
+        }
+
+        if (currentIndex < documents.length) runNext();
+      };
+
+      for (let i = 0; i < maxConcurrency; i++) runNext();
+    } catch (error: any) {
+      console.error('Bulk download error:', error);
+      if (!res.headersSent) res.status(500).json({ error: error.message || "Failed to create zip file" });
+    }
+  });
+
+  // Certificate endpoint
+  app.get("/api/signatures/:signatureId/certificate", async (req: Request, res: Response) => {
+    try {
+      const { signatureId } = req.params;
+      const signature = await storage.getSignature(signatureId);
+
+      if (!signature) {
+        return res.status(404).json({ error: "Signature not found" });
+      }
+
+      const { CertificateService } = require('../server/services/certificate');
+      const certificateService = new CertificateService();
+      const certificateId = certificateService.generateCertificateId();
+
+      const certificateData = {
+        signatureName: signature.name,
+        fullName: signature.fullName,
+        companyName: signature.companyName,
+        location: signature.location,
+        timeZone: signature.timeZone,
+        createdAt: signature.createdAt,
+        certificateId: certificateId,
+        signatureImage: signature.signatureImage
+      };
+
+      const pdfBytes = await certificateService.generateAdobeStyleCertificate(certificateData);
+
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Content-Disposition", `attachment; filename="${signature.name}-certificate.pdf"`);
+      res.send(Buffer.from(pdfBytes));
+    } catch (error: any) {
+      console.error('Certificate generation error:', error);
+      res.status(500).json({ error: error.message || "Failed to generate certificate" });
+    }
+  });
+
+  // PDF view endpoint
+  app.get("/api/documents/:documentId/view", async (req: Request, res: Response) => {
+    try {
+      const { documentId } = req.params;
+
+      const document = await storage.getDocument(documentId);
+      if (!document) {
+        return res.status(404).json({ error: "Document not found", documentId });
+      }
+
+      try {
+        await fs.access(document.filePath);
+      } catch (accessError: any) {
+        if (accessError.code === 'ENOENT') {
+          try {
+            const appliedSignatures = await storage.getDocumentSignatures(document.id);
+            for (const sig of appliedSignatures) {
+              try { await storage.removeSignature(sig.id); } catch {}
+            }
+            await storage.deleteDocument(document.id);
+          } catch {}
+          return res.status(404).json({ error: "Document cleaned up", documentId: document.id });
+        }
+        return res.status(500).json({ error: "File access error" });
+      }
+
+      const appliedSignatures = await storage.getDocumentSignatures(documentId);
+
+      if (appliedSignatures.length > 0) {
+        const signaturesToApply = [];
+        const signatureIds = Array.from(new Set(appliedSignatures.map(sig => sig.signatureId)));
+        const signatures = await Promise.all(signatureIds.map(id => storage.getSignature(id)));
+        const signatureMap = new Map(signatures.filter(Boolean).map(sig => [sig!.id, sig!]));
+
+        for (const appliedSig of appliedSignatures) {
+          const signature = signatureMap.get(appliedSig.signatureId);
+          if (signature) {
+            signaturesToApply.push({
+              pageNumber: appliedSig.pageNumber,
+              position: appliedSig.position as any,
+              signatureData: { fullName: signature.fullName, companyName: signature.companyName, location: signature.location, timestamp: appliedSig.appliedAt || new Date(), timeZone: signature.timeZone, signatureImage: signature.signatureImage || undefined },
+            });
+          }
+        }
+
+        const signedPdfBytes = await pdfService.applySignatureToPdf(document.filePath, signaturesToApply);
+
+        res.setHeader("Content-Type", "application/pdf");
+        res.setHeader("Content-Disposition", `inline; filename="${document.originalName}"`);
+        res.send(Buffer.from(signedPdfBytes));
+      } else {
+        const pdfBytes = await fs.readFile(document.filePath);
+        res.setHeader("Content-Type", "application/pdf");
+        res.setHeader("Content-Disposition", `inline; filename="${document.originalName}"`);
+        res.send(pdfBytes);
+      }
+    } catch (error: any) {
+      console.error('PDF view error:', error);
+      res.status(500).json({ error: error.message || "Failed to view PDF" });
+    }
+  });
+
+  // Create HTTP server
+  const server = createServer(app);
+  return server;
+}
+
+// Register routes
+const serverPromise = registerRoutes(app);
+
+// Global error handler
+app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
+  const status = err?.status || err?.statusCode || 500;
+  const message = err?.message || "Internal Server Error";
+  res.status(status).json({ message });
+  console.error(err);
+});
+
+// Vercel serverless function entrypoint
+export default async function handler(req: any, res: any) {
+  await serverPromise;
+  return app(req, res);
+}
+</parameter>

@@ -5,12 +5,11 @@ import { authService } from "./services/auth";
 import { signatureService } from "./services/signature";
 import { pdfService } from "./services/pdf";
 import { emailService } from "./services/email";
-import { insertUserSchema, insertSignatureSchema } from "../shared/schema";
+import { insertUserSchema, insertSignatureSchema, users, pdfDocuments, type PdfDocument } from "../shared/schema";
+import { db } from "./db";
 import multer from "multer";
 import path from "path";
 import { z } from "zod";
-import { db } from "./db";
-import { pdfDocuments, type PdfDocument } from "../shared/schema";
 import crypto from "crypto";
 import { promises as fs } from "fs";
 import fsSync from "fs";
@@ -76,17 +75,64 @@ const upload = multer({
 });
 
 export async function registerRoutes(app: Express): Promise<Server> {
-  // Test endpoint to verify server is working
+  // Enhanced health check endpoint for Vercel monitoring
   app.get("/api/health", async (req, res) => {
+    const startTime = Date.now();
     try {
-      res.json({
-        status: "ok",
+      console.log("Health check requested");
+
+      // Check database connection
+      let dbHealthy = false;
+      let dbLatency = 0;
+      try {
+        const dbStart = Date.now();
+        const result = await db.select({ now: db.raw('NOW()') }).from(users).limit(1);
+        dbLatency = Date.now() - dbStart;
+        dbHealthy = true;
+        console.log("Database health check passed");
+      } catch (dbError: any) {
+        console.error("Database health check failed:", dbError.message);
+      }
+
+      // Get system metrics
+      const memoryUsage = process.memoryUsage();
+      const uptime = process.uptime();
+
+      const response = {
+        status: dbHealthy ? "healthy" : "degraded",
         timestamp: new Date().toISOString(),
-        uptime: process.uptime(),
-        memory: process.memoryUsage()
-      });
+        uptime: Math.floor(uptime),
+        version: process.env.npm_package_version || "1.0.0",
+        environment: process.env.NODE_ENV || "development",
+        checks: {
+          database: {
+            status: dbHealthy ? "healthy" : "unhealthy",
+            latency: dbLatency,
+            error: dbHealthy ? null : "Database connection failed"
+          }
+        },
+        metrics: {
+          memory: {
+            heapUsed: Math.round(memoryUsage.heapUsed / 1024 / 1024),
+            heapTotal: Math.round(memoryUsage.heapTotal / 1024 / 1024),
+            external: Math.round(memoryUsage.external / 1024 / 1024),
+            unit: "MB"
+          },
+          cpu: process.cpuUsage()
+        },
+        requestLatency: Date.now() - startTime
+      };
+
+      const statusCode = dbHealthy ? 200 : 503;
+      res.status(statusCode).json(response);
     } catch (error: any) {
-      res.status(500).json({ error: error.message });
+      console.error("Health check error:", error);
+      res.status(500).json({
+        status: "unhealthy",
+        timestamp: new Date().toISOString(),
+        error: error.message,
+        requestLatency: Date.now() - startTime
+      });
     }
   });
 
@@ -160,24 +206,58 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Auth routes
+  // Auth routes with enhanced error handling
   app.post("/api/auth/register", async (req, res) => {
+    const startTime = Date.now();
     try {
+      console.log("Registration request received:", {
+        email: req.body.email ? 'provided' : 'missing',
+        hasFullName: !!req.body.fullName
+      });
+
       const userData = insertUserSchema.parse(req.body);
       const user = await authService.register(userData);
+
+      console.log("Registration successful:", { userId: user.id, email: user.email });
       res.json({ success: true, user });
+
     } catch (error: any) {
-      res.status(400).json({ error: error.message });
+      console.error("Registration error:", error.message);
+      const statusCode = error.message?.includes("already exists") ? 409 : 400;
+      res.status(statusCode).json({ error: error.message });
     }
   });
 
   app.post("/api/auth/login", async (req, res) => {
+    const startTime = Date.now();
     try {
       const { email, password } = req.body;
+
+      console.log("Login attempt:", { email: email ? 'provided' : 'missing' });
+
+      // Validate input
+      if (!email || !password) {
+        console.log("Login failed: Missing credentials");
+        return res.status(400).json({ error: "Email and password are required" });
+      }
+
       const user = await authService.login(email, password);
+
+      console.log("Login successful:", { userId: user.id, email: user.email, duration: Date.now() - startTime });
       res.json({ success: true, user });
+
     } catch (error: any) {
-      res.status(401).json({ error: error.message });
+      console.error("Login error:", {
+        message: error.message,
+        duration: Date.now() - startTime
+      });
+      
+      // Don't expose whether email or password was wrong for security
+      if (error.message === "Invalid credentials" || error.message === "Please verify your email before logging in") {
+        return res.status(401).json({ error: error.message });
+      }
+      
+      res.status(500).json({ error: "An error occurred during login" });
     }
   });
 
@@ -489,8 +569,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       console.log("=== FIXING DOCUMENT STATUS ===");
 
       // Get all documents
-      const allDocuments = await db.select().from(pdfDocuments);
-      console.log("All documents:", allDocuments.map(d => ({ id: d.id, status: d.status, fileName: d.fileName })));
+      const allDocuments: PdfDocument[] = await db.select().from(pdfDocuments);
+      console.log("All documents:", allDocuments.map((d: PdfDocument) => ({ id: d.id, status: d.status, fileName: d.fileName })));
 
       // Update documents without status
       let updatedCount = 0;
